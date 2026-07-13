@@ -1,9 +1,12 @@
 use std::net::SocketAddr;
 
-use tokio::{io, net::{TcpListener, TcpStream}};
+use tokio::{
+    io,
+    net::{TcpListener, TcpStream},
+};
 
 #[tokio::main]
-async fn main() -> io::Result<()>{
+async fn main() -> io::Result<()> {
     tracing_subscriber::fmt().with_target(false).init();
 
     let listen_addr = SocketAddr::from(([127, 0, 0, 1], 8080));
