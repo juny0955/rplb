@@ -36,3 +36,10 @@
   `test`, `ci`, `dependencies`, `performance`, `security`)을 붙인다. 새 기능
   PR에는 `feature`, 버그 수정 PR에는 `bug`, 문서 전용 PR에는 `docs`를
   사용한다. `priority: *` 라벨은 이슈 전용이며 PR에는 붙이지 않는다.
+
+## Test 작성 규칙
+
+- 함수명: 테스트 함수는 한국어로, 검증 대상과 조건이 드러나게 작성
+- 구조: Given / When / Then 구획을 유지하고 테스트 하나는 하나의 동작만 검증
+- 범위: 기능 변경마다 정상·경계·오류 경로 단위 테스트를 추가하고, 네트워크 동작은 실제 연결 통합 테스트와 수동 스모크도 추가
+- 품질: sleep·시간 의존·불필요한 mock을 피하고 cargo fmt --check, cargo clippy --all-targets -- -D warnings, cargo test --all-targets를 통과
