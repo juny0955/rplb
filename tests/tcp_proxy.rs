@@ -1,0 +1,165 @@
+use std::{io, net::SocketAddr, time::Duration};
+
+use rplb::{pool::ServerPool, tcp::serve};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+    task::JoinHandle,
+    time::timeout,
+};
+
+const TEST_TIMEOUT: Duration = Duration::from_secs(1);
+
+struct Proxy {
+    address: SocketAddr,
+    task: JoinHandle<io::Result<()>>,
+}
+
+impl Drop for Proxy {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+async fn start_proxy(servers: Vec<SocketAddr>) -> io::Result<Proxy> {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let address = listener.local_addr()?;
+    let task = tokio::spawn(serve(listener, ServerPool::new(servers)));
+
+    Ok(Proxy { address, task })
+}
+
+async fn start_reply_backend(
+    reply: &'static [u8],
+    connection_count: usize,
+) -> io::Result<(SocketAddr, JoinHandle<io::Result<()>>)> {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let address = listener.local_addr()?;
+    let task = tokio::spawn(async move {
+        for _ in 0..connection_count {
+            let (mut stream, _) = listener.accept().await?;
+            stream.write_all(reply).await?;
+            stream.shutdown().await?;
+        }
+
+        Ok(())
+    });
+
+    Ok((address, task))
+}
+
+async fn receive_reply(proxy_addr: SocketAddr) -> io::Result<Vec<u8>> {
+    let mut client = TcpStream::connect(proxy_addr).await?;
+    let mut reply = Vec::new();
+    client.read_to_end(&mut reply).await?;
+
+    Ok(reply)
+}
+
+async fn join(task: JoinHandle<io::Result<()>>) -> io::Result<()> {
+    task.await.map_err(io::Error::other)?
+}
+
+#[tokio::test]
+async fn 연속_연결을_서버에_라운드로빈_순서로_전달한다() -> io::Result<()> {
+    // Given
+    let (first_addr, first_backend) = start_reply_backend(b"A", 2).await?;
+    let (second_addr, second_backend) = start_reply_backend(b"B", 1).await?;
+    let proxy = start_proxy(vec![first_addr, second_addr]).await?;
+
+    // When
+    let replies = timeout(TEST_TIMEOUT, async {
+        Ok::<_, io::Error>([
+            receive_reply(proxy.address).await?,
+            receive_reply(proxy.address).await?,
+            receive_reply(proxy.address).await?,
+        ])
+    })
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "round-robin test timed out"))??;
+
+    // Then
+    assert_eq!(replies, [b"A".to_vec(), b"B".to_vec(), b"A".to_vec()]);
+    timeout(TEST_TIMEOUT, join(first_backend))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "first backend did not finish"))??;
+    timeout(TEST_TIMEOUT, join(second_backend))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "second backend did not finish"))??;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn 클라이언트_쓰기_종료_후에도_서버_응답을_전달한다() -> io::Result<()> {
+    // Given
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let backend_addr = listener.local_addr()?;
+    let backend = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await?;
+        let mut request = Vec::new();
+        stream.read_to_end(&mut request).await?;
+
+        if request != b"request" {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unexpected proxy request",
+            ));
+        }
+
+        stream.write_all(b"response").await?;
+        stream.shutdown().await?;
+        Ok(())
+    });
+    let proxy = start_proxy(vec![backend_addr]).await?;
+
+    // When
+    let reply = timeout(TEST_TIMEOUT, async {
+        let mut client = TcpStream::connect(proxy.address).await?;
+        client.write_all(b"request").await?;
+        client.shutdown().await?;
+
+        let mut reply = Vec::new();
+        client.read_to_end(&mut reply).await?;
+        Ok::<_, io::Error>(reply)
+    })
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "half-close test timed out"))??;
+
+    // Then
+    assert_eq!(reply, b"response");
+    timeout(TEST_TIMEOUT, join(backend))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "backend did not finish"))??;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn 실패한_서버_연결_후에도_다음_연결을_처리한다() -> io::Result<()> {
+    // Given
+    let (healthy_addr, healthy_backend) = start_reply_backend(b"healthy", 1).await?;
+    let unavailable_addr = SocketAddr::from(([127, 0, 0, 1], 0));
+    let proxy = start_proxy(vec![unavailable_addr, healthy_addr]).await?;
+
+    // When
+    let (first_read_size, next_reply) = timeout(TEST_TIMEOUT, async {
+        let mut failed_client = TcpStream::connect(proxy.address).await?;
+        let mut first_buffer = [0_u8; 1];
+        let first_read_size = failed_client.read(&mut first_buffer).await?;
+
+        let next_reply = receive_reply(proxy.address).await?;
+        Ok::<_, io::Error>((first_read_size, next_reply))
+    })
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "failure isolation test timed out"))??;
+
+    // Then
+    assert_eq!(first_read_size, 0);
+    assert_eq!(next_reply, b"healthy");
+    timeout(TEST_TIMEOUT, join(healthy_backend))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "healthy backend did not finish"))??;
+
+    Ok(())
+}
