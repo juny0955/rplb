@@ -27,19 +27,25 @@ impl ServerPool {
         }
 
         let server_count = self.servers.len();
+        let mut index = self.next.load(Ordering::Relaxed);
 
-        let index = self
-            .next
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                Some(if current + 1 == server_count {
-                    0
-                } else {
-                    current + 1
-                })
-            })
-            .expect("selecetion update always return a next index");
+        loop {
+            let next_index = if index + 1 == server_count {
+                0
+            } else {
+                index + 1
+            };
 
-        Ok(self.servers[index])
+            match self.next.compare_exchange_weak(
+                index,
+                next_index,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Ok(self.servers[index]),
+                Err(current_index) => index = current_index,
+            }
+        }
     }
 }
 
