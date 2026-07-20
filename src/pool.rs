@@ -26,7 +26,19 @@ impl ServerPool {
             return Err(PoolError::EmptyPool);
         }
 
-        let index = self.next.fetch_add(1, Ordering::Relaxed) % self.servers.len();
+        let server_count = self.servers.len();
+
+        let index = self
+            .next
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(if current + 1 == server_count {
+                    0
+                } else {
+                    current + 1
+                })
+            })
+            .expect("selecetion update always return a next index");
+
         Ok(self.servers[index])
     }
 }
