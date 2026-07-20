@@ -1,6 +1,9 @@
 use std::net::SocketAddr;
 
-use rplb::{pool::ServerPool, tcp::serve};
+use rplb::{
+    pool::{LoadBalancingPolicy, ServerPool},
+    tcp::serve,
+};
 use tokio::{io, net::TcpListener};
 
 #[tokio::main]
@@ -13,7 +16,7 @@ async fn main() -> io::Result<()> {
         SocketAddr::from(([127, 0, 0, 1], 9000)),
         SocketAddr::from(([127, 0, 0, 1], 9001)),
     ];
-    let server_pool = ServerPool::new(server_addrs.to_vec());
+    let server_pool = ServerPool::new(server_addrs.to_vec(), LoadBalancingPolicy::RR);
 
     let listener = TcpListener::bind(listen_addr).await?;
 

@@ -1,6 +1,9 @@
 use std::{io, net::SocketAddr};
 
-use rplb::{pool::ServerPool, tcp::serve};
+use rplb::{
+    pool::{LoadBalancingPolicy, ServerPool},
+    tcp::serve,
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -21,7 +24,10 @@ impl Drop for Proxy {
 async fn start_proxy(servers: Vec<SocketAddr>) -> io::Result<Proxy> {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
     let address = listener.local_addr()?;
-    let task = tokio::spawn(serve(listener, ServerPool::new(servers)));
+    let task = tokio::spawn(serve(
+        listener,
+        ServerPool::new(servers, LoadBalancingPolicy::RR),
+    ));
 
     Ok(Proxy { address, task })
 }

@@ -8,15 +8,22 @@ pub enum PoolError {
     EmptyPool,
 }
 
+pub enum LoadBalancingPolicy {
+    RR,   // RoundRobin
+    SWRR, // SmoothWeightedRoundRobin
+}
+
 pub struct ServerPool {
     servers: Vec<SocketAddr>,
+    policy: LoadBalancingPolicy,
     next: AtomicUsize,
 }
 
 impl ServerPool {
-    pub fn new(servers: Vec<SocketAddr>) -> Self {
+    pub fn new(servers: Vec<SocketAddr>, policy: LoadBalancingPolicy) -> Self {
         Self {
             servers,
+            policy,
             next: AtomicUsize::new(0),
         }
     }
@@ -26,6 +33,13 @@ impl ServerPool {
             return Err(PoolError::EmptyPool);
         }
 
+        match self.policy {
+            LoadBalancingPolicy::RR => self.select_rr(),
+            LoadBalancingPolicy::SWRR => self.select_swrr(),
+        }
+    }
+
+    fn select_rr(&self) -> Result<SocketAddr, PoolError> {
         let server_count = self.servers.len();
         let mut index = self.next.load(Ordering::Relaxed);
 
@@ -47,13 +61,17 @@ impl ServerPool {
             }
         }
     }
+
+    fn select_swrr(&self) -> Result<SocketAddr, PoolError> {
+        unreachable!();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::{net::SocketAddr, sync::atomic::Ordering};
 
-    use super::{PoolError, ServerPool};
+    use super::{LoadBalancingPolicy, PoolError, ServerPool};
 
     fn server(port: u16) -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], port))
@@ -65,7 +83,7 @@ mod tests {
         let first = server(9000);
         let second = server(9001);
         let third = server(9002);
-        let pool = ServerPool::new(vec![first, second, third]);
+        let pool = ServerPool::new(vec![first, second, third], LoadBalancingPolicy::RR);
 
         // When
         let selected = [
@@ -83,7 +101,7 @@ mod tests {
         // Given
         let first = server(9000);
         let second = server(9001);
-        let pool = ServerPool::new(vec![first, second]);
+        let pool = ServerPool::new(vec![first, second], LoadBalancingPolicy::RR);
 
         // When
         let selected = [
@@ -100,7 +118,10 @@ mod tests {
     #[test]
     fn 서버를_한_바퀴_선택하면_다음_인덱스가_처음으로_돌아간다() {
         // Given
-        let pool = ServerPool::new(vec![server(9000), server(9001), server(9002)]);
+        let pool = ServerPool::new(
+            vec![server(9000), server(9001), server(9002)],
+            LoadBalancingPolicy::RR,
+        );
 
         // When
         for _ in 0..3 {
@@ -114,7 +135,7 @@ mod tests {
     #[test]
     fn 서버가_없으면_빈_풀_오류를_반환한다() {
         // Given
-        let pool = ServerPool::new(Vec::new());
+        let pool = ServerPool::new(Vec::new(), LoadBalancingPolicy::RR);
 
         // When
         let result = pool.select();
