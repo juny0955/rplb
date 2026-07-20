@@ -44,6 +44,34 @@ client 연결마다 정적 backend로 붙여 `copy_bidirectional`로 양방향
 healthy backend를 순서대로 선택하는 Round Robin을 TCP 연결 처리와
 분리해 구현합니다. 빈 pool은 panic 없이 명확한 실패로 처리합니다.
 
+#### 수동 스모크 테스트
+
+세 터미널에서 backend 두 개와 프록시를 각각 실행합니다.
+
+```sh
+# 터미널 1
+cargo run --bin echo-backend -- 9000
+
+# 터미널 2
+cargo run --bin echo-backend -- 9001
+
+# 터미널 3
+cargo run --bin rplb
+```
+
+네 번째 터미널에서 연결을 순서대로 세 번 만듭니다.
+
+```sh
+printf 'first\n' | nc -N 127.0.0.1 8080
+printf 'second\n' | nc -N 127.0.0.1 8080
+printf 'third\n' | nc -N 127.0.0.1 8080
+```
+
+각 명령은 보낸 문자열을 echo로 반환합니다. backend 로그에서는 `9000`이
+`first`, `third`를 받고 `9001`이 `second`를 받으면 Round Robin 순서
+`9000 → 9001 → 9000`가 검증됩니다. 테스트가 끝나면 각 프로세스에서
+`Ctrl-C`로 종료합니다.
+
 ### M3. Smooth Weighted Round Robin
 
 현재 가중치/전체 가중치 기반 smooth 선택으로 양의 정수 weight 비율에
