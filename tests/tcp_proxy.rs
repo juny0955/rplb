@@ -163,3 +163,20 @@ async fn 실패한_서버_연결_후에도_다음_연결을_처리한다() -> io
 
     Ok(())
 }
+
+#[tokio::test]
+async fn 빈_풀이면_연속_클라이언트_연결을_종료하고_accept_loop을_유지한다() -> io::Result<()> {
+    // Given
+    let proxy = start_proxy(Vec::new()).await?;
+
+    // When
+    let replies = [
+        receive_reply(proxy.address).await?,
+        receive_reply(proxy.address).await?,
+    ];
+
+    // Then
+    assert_eq!(replies, [Vec::new(), Vec::new()]);
+
+    Ok(())
+}

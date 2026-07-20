@@ -51,7 +51,7 @@ impl ServerPool {
 
 #[cfg(test)]
 mod tests {
-    use std::net::SocketAddr;
+    use std::{net::SocketAddr, sync::atomic::Ordering};
 
     use super::{PoolError, ServerPool};
 
@@ -95,6 +95,20 @@ mod tests {
 
         // Then
         assert_eq!(selected, [first, second, first]);
+    }
+
+    #[test]
+    fn 서버를_한_바퀴_선택하면_다음_인덱스가_처음으로_돌아간다() {
+        // Given
+        let pool = ServerPool::new(vec![server(9000), server(9001), server(9002)]);
+
+        // When
+        for _ in 0..3 {
+            let _ = pool.select().expect("server should be selected");
+        }
+
+        // Then
+        assert_eq!(pool.next.load(Ordering::Relaxed), 0);
     }
 
     #[test]
