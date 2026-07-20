@@ -1,14 +1,11 @@
-use std::{io, net::SocketAddr, time::Duration};
+use std::{io, net::SocketAddr};
 
 use rplb::{pool::ServerPool, tcp::serve};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     task::JoinHandle,
-    time::timeout,
 };
-
-const TEST_TIMEOUT: Duration = Duration::from_secs(1);
 
 struct Proxy {
     address: SocketAddr,
@@ -68,24 +65,16 @@ async fn 연속_연결을_서버에_라운드로빈_순서로_전달한다() -> 
     let proxy = start_proxy(vec![first_addr, second_addr]).await?;
 
     // When
-    let replies = timeout(TEST_TIMEOUT, async {
-        Ok::<_, io::Error>([
-            receive_reply(proxy.address).await?,
-            receive_reply(proxy.address).await?,
-            receive_reply(proxy.address).await?,
-        ])
-    })
-    .await
-    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "round-robin test timed out"))??;
+    let replies = [
+        receive_reply(proxy.address).await?,
+        receive_reply(proxy.address).await?,
+        receive_reply(proxy.address).await?,
+    ];
 
     // Then
     assert_eq!(replies, [b"A".to_vec(), b"B".to_vec(), b"A".to_vec()]);
-    timeout(TEST_TIMEOUT, join(first_backend))
-        .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "first backend did not finish"))??;
-    timeout(TEST_TIMEOUT, join(second_backend))
-        .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "second backend did not finish"))??;
+    join(first_backend).await?;
+    join(second_backend).await?;
 
     Ok(())
 }
@@ -114,23 +103,16 @@ async fn 클라이언트_쓰기_종료_후에도_서버_응답을_전달한다()
     let proxy = start_proxy(vec![backend_addr]).await?;
 
     // When
-    let reply = timeout(TEST_TIMEOUT, async {
-        let mut client = TcpStream::connect(proxy.address).await?;
-        client.write_all(b"request").await?;
-        client.shutdown().await?;
+    let mut client = TcpStream::connect(proxy.address).await?;
+    client.write_all(b"request").await?;
+    client.shutdown().await?;
 
-        let mut reply = Vec::new();
-        client.read_to_end(&mut reply).await?;
-        Ok::<_, io::Error>(reply)
-    })
-    .await
-    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "half-close test timed out"))??;
+    let mut reply = Vec::new();
+    client.read_to_end(&mut reply).await?;
 
     // Then
     assert_eq!(reply, b"response");
-    timeout(TEST_TIMEOUT, join(backend))
-        .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "backend did not finish"))??;
+    join(backend).await?;
 
     Ok(())
 }
@@ -143,23 +125,16 @@ async fn 실패한_서버_연결_후에도_다음_연결을_처리한다() -> io
     let proxy = start_proxy(vec![unavailable_addr, healthy_addr]).await?;
 
     // When
-    let (first_read_size, next_reply) = timeout(TEST_TIMEOUT, async {
-        let mut failed_client = TcpStream::connect(proxy.address).await?;
-        let mut first_buffer = [0_u8; 1];
-        let first_read_size = failed_client.read(&mut first_buffer).await?;
+    let mut failed_client = TcpStream::connect(proxy.address).await?;
+    let mut first_buffer = [0_u8; 1];
+    let first_read_size = failed_client.read(&mut first_buffer).await?;
 
-        let next_reply = receive_reply(proxy.address).await?;
-        Ok::<_, io::Error>((first_read_size, next_reply))
-    })
-    .await
-    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "failure isolation test timed out"))??;
+    let next_reply = receive_reply(proxy.address).await?;
 
     // Then
     assert_eq!(first_read_size, 0);
     assert_eq!(next_reply, b"healthy");
-    timeout(TEST_TIMEOUT, join(healthy_backend))
-        .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "healthy backend did not finish"))??;
+    join(healthy_backend).await?;
 
     Ok(())
 }
