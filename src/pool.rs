@@ -1,4 +1,7 @@
-use std::{net::SocketAddr, num::NonZeroUsize};
+use std::{
+    net::SocketAddr,
+    num::{NonZeroU32, NonZeroUsize},
+};
 
 mod round_robin;
 
@@ -35,13 +38,28 @@ impl Selector {
     }
 }
 
+pub struct Backend {
+    addr: SocketAddr,
+    weight: NonZeroU32,
+}
+
+impl Backend {
+    pub const fn new(addr: SocketAddr, weight: NonZeroU32) -> Self {
+        Self { addr, weight }
+    }
+
+    pub const fn weight(&self) -> NonZeroU32 {
+        self.weight
+    }
+}
+
 pub struct ServerPool {
-    servers: Vec<SocketAddr>,
+    servers: Vec<Backend>,
     selector: Selector,
 }
 
 impl ServerPool {
-    pub fn new(servers: Vec<SocketAddr>, policy: LoadBalancingPolicy) -> Self {
+    pub fn new(servers: Vec<Backend>, policy: LoadBalancingPolicy) -> Self {
         Self {
             servers,
             selector: Selector::new(policy),
@@ -54,18 +72,22 @@ impl ServerPool {
         };
 
         let index = self.selector.select(server_count)?;
-        Ok(self.servers[index])
+        Ok(self.servers[index].addr)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::net::SocketAddr;
+    use std::{net::SocketAddr, num::NonZeroU32};
 
-    use super::{LoadBalancingPolicy, PoolError, ServerPool};
+    use super::{Backend, LoadBalancingPolicy, PoolError, ServerPool};
 
     fn server(port: u16) -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], port))
+    }
+
+    fn backend(addr: SocketAddr) -> Backend {
+        Backend::new(addr, NonZeroU32::MIN)
     }
 
     #[test]
@@ -74,7 +96,10 @@ mod tests {
         let first = server(9000);
         let second = server(9001);
         let third = server(9002);
-        let pool = ServerPool::new(vec![first, second, third], LoadBalancingPolicy::RR);
+        let pool = ServerPool::new(
+            vec![backend(first), backend(second), backend(third)],
+            LoadBalancingPolicy::RR,
+        );
 
         // When
         let selected = [
@@ -92,7 +117,10 @@ mod tests {
         // Given
         let first = server(9000);
         let second = server(9001);
-        let pool = ServerPool::new(vec![first, second], LoadBalancingPolicy::RR);
+        let pool = ServerPool::new(
+            vec![backend(first), backend(second)],
+            LoadBalancingPolicy::RR,
+        );
 
         // When
         let selected = [

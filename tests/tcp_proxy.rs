@@ -1,7 +1,7 @@
-use std::{io, net::SocketAddr};
+use std::{io, net::SocketAddr, num::NonZeroU32};
 
 use rplb::{
-    pool::{LoadBalancingPolicy, ServerPool},
+    pool::{Backend, LoadBalancingPolicy, ServerPool},
     tcp::serve,
 };
 use tokio::{
@@ -9,6 +9,10 @@ use tokio::{
     net::{TcpListener, TcpStream},
     task::JoinHandle,
 };
+
+fn weighted_backend(addr: SocketAddr) -> Backend {
+    Backend::new(addr, NonZeroU32::MIN)
+}
 
 struct Proxy {
     address: SocketAddr,
@@ -21,7 +25,7 @@ impl Drop for Proxy {
     }
 }
 
-async fn start_proxy(servers: Vec<SocketAddr>) -> io::Result<Proxy> {
+async fn start_proxy(servers: Vec<Backend>) -> io::Result<Proxy> {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
     let address = listener.local_addr()?;
     let task = tokio::spawn(serve(
@@ -68,7 +72,11 @@ async fn 연속_연결을_서버에_라운드로빈_순서로_전달한다() -> 
     // Given
     let (first_addr, first_backend) = start_reply_backend(b"A", 2).await?;
     let (second_addr, second_backend) = start_reply_backend(b"B", 1).await?;
-    let proxy = start_proxy(vec![first_addr, second_addr]).await?;
+    let proxy = start_proxy(vec![
+        weighted_backend(first_addr),
+        weighted_backend(second_addr),
+    ])
+    .await?;
 
     // When
     let replies = [
@@ -106,7 +114,7 @@ async fn 클라이언트_쓰기_종료_후에도_서버_응답을_전달한다()
         stream.shutdown().await?;
         Ok(())
     });
-    let proxy = start_proxy(vec![backend_addr]).await?;
+    let proxy = start_proxy(vec![weighted_backend(backend_addr)]).await?;
 
     // When
     let mut client = TcpStream::connect(proxy.address).await?;
@@ -128,7 +136,11 @@ async fn 실패한_서버_연결_후에도_다음_연결을_처리한다() -> io
     // Given
     let (healthy_addr, healthy_backend) = start_reply_backend(b"healthy", 1).await?;
     let unavailable_addr = SocketAddr::from(([127, 0, 0, 1], 0));
-    let proxy = start_proxy(vec![unavailable_addr, healthy_addr]).await?;
+    let proxy = start_proxy(vec![
+        weighted_backend(unavailable_addr),
+        weighted_backend(healthy_addr),
+    ])
+    .await?;
 
     // When
     let mut failed_client = TcpStream::connect(proxy.address).await?;

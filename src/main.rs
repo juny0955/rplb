@@ -1,7 +1,7 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, num::NonZeroU32};
 
 use rplb::{
-    pool::{LoadBalancingPolicy, ServerPool},
+    pool::{Backend, LoadBalancingPolicy, ServerPool},
     tcp::serve,
 };
 use tokio::{io, net::TcpListener};
@@ -16,7 +16,8 @@ async fn main() -> io::Result<()> {
         SocketAddr::from(([127, 0, 0, 1], 9000)),
         SocketAddr::from(([127, 0, 0, 1], 9001)),
     ];
-    let server_pool = ServerPool::new(server_addrs.to_vec(), LoadBalancingPolicy::RR);
+    let backends = server_addrs.map(|addr| Backend::new(addr, NonZeroU32::MIN));
+    let server_pool = ServerPool::new(Vec::from(backends), LoadBalancingPolicy::RR);
 
     let listener = TcpListener::bind(listen_addr).await?;
 
