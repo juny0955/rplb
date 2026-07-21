@@ -92,6 +92,10 @@ mod tests {
         Server::new(addr, NonZeroU32::MIN)
     }
 
+    fn weighted_server(addr: SocketAddr, weight: NonZeroU32) -> Server {
+        Server::new(addr, weight)
+    }
+
     #[test]
     fn 서버를_입력_순서대로_선택한다() {
         // Given
@@ -143,5 +147,83 @@ mod tests {
 
         // Then
         assert!(matches!(result, Err(PoolError::EmptyPool)));
+    }
+
+    #[test]
+    fn swrr에서_동일한_가중치의_서버를_입력_순서대로_선택한다() {
+        // Given
+        let first = server_address(9000);
+        let second = server_address(9001);
+        let pool = ServerPool::new(
+            vec![server(first), server(second)],
+            LoadBalancingPolicy::SWRR,
+        );
+
+        // When
+        let selected = [
+            pool.select().expect("first server should be selected"),
+            pool.select().expect("second server should be selected"),
+            pool.select()
+                .expect("first server should be selected again"),
+            pool.select()
+                .expect("second server should be selected again"),
+        ];
+
+        // Then
+        assert_eq!(selected, [first, second, first, second]);
+    }
+
+    #[test]
+    fn swrr에서_가중치가_3대1이면_서버를_3대1_순서로_선택한다() {
+        // Given
+        let first = server_address(9000);
+        let second = server_address(9001);
+        let pool = ServerPool::new(
+            vec![
+                weighted_server(
+                    first,
+                    NonZeroU32::new(3).expect("weight should be non-zero"),
+                ),
+                server(second),
+            ],
+            LoadBalancingPolicy::SWRR,
+        );
+
+        // When
+        let selected = [
+            pool.select().expect("first server should be selected"),
+            pool.select()
+                .expect("first server should be selected again"),
+            pool.select().expect("second server should be selected"),
+            pool.select()
+                .expect("first server should be selected in the next cycle"),
+        ];
+
+        // Then
+        assert_eq!(selected, [first, first, second, first]);
+    }
+
+    #[test]
+    fn swrr에서_서버가_없으면_빈_풀_오류를_반환한다() {
+        // Given
+        let pool = ServerPool::new(Vec::new(), LoadBalancingPolicy::SWRR);
+
+        // When
+        let result = pool.select();
+
+        // Then
+        assert!(matches!(result, Err(PoolError::EmptyPool)));
+    }
+
+    #[test]
+    fn 가중치_0은_non_zero_u32로_표현할_수_없다() {
+        // Given
+        let zero = 0;
+
+        // When
+        let weight = NonZeroU32::new(zero);
+
+        // Then
+        assert_eq!(weight, None);
     }
 }
