@@ -4,8 +4,11 @@ use std::{
 };
 
 mod round_robin;
+mod sw_round_robin;
 
 use round_robin::RoundRobin;
+
+use crate::pool::sw_round_robin::SmoothWeightedRoundRobin;
 
 #[derive(Debug)]
 pub enum PoolError {
@@ -18,32 +21,36 @@ pub enum LoadBalancingPolicy {
 }
 
 enum Selector {
-    RoundRobin(RoundRobin),
-    SmoothWeightedRoundRobin,
+    RR(RoundRobin),
+    Swrr(SmoothWeightedRoundRobin),
 }
 
 impl Selector {
-    fn new(policy: LoadBalancingPolicy) -> Self {
+    fn new(policy: LoadBalancingPolicy, servers: &[Server]) -> Self {
         match policy {
-            LoadBalancingPolicy::RR => Self::RoundRobin(RoundRobin::new()),
-            LoadBalancingPolicy::SWRR => Self::SmoothWeightedRoundRobin,
+            LoadBalancingPolicy::RR => Self::RR(RoundRobin::new()),
+            LoadBalancingPolicy::SWRR => Self::Swrr(SmoothWeightedRoundRobin::new(servers)),
         }
     }
 
-    fn select(&self, server_count: NonZeroUsize) -> Result<usize, PoolError> {
+    fn select(&self, servers: &[Server]) -> Result<usize, PoolError> {
+        let Some(server_count) = NonZeroUsize::new(servers.len()) else {
+            return Err(PoolError::EmptyPool);
+        };
+
         match self {
-            Self::RoundRobin(round_robin) => Ok(round_robin.select(server_count)),
-            Self::SmoothWeightedRoundRobin => unreachable!(),
+            Self::RR(rr) => Ok(rr.select(server_count)),
+            Self::Swrr(swrr) => swrr.select(servers).ok_or(PoolError::EmptyPool),
         }
     }
 }
 
-pub struct Backend {
+pub struct Server {
     addr: SocketAddr,
     weight: NonZeroU32,
 }
 
-impl Backend {
+impl Server {
     pub const fn new(addr: SocketAddr, weight: NonZeroU32) -> Self {
         Self { addr, weight }
     }
@@ -54,24 +61,19 @@ impl Backend {
 }
 
 pub struct ServerPool {
-    servers: Vec<Backend>,
+    servers: Vec<Server>,
     selector: Selector,
 }
 
 impl ServerPool {
-    pub fn new(servers: Vec<Backend>, policy: LoadBalancingPolicy) -> Self {
-        Self {
-            servers,
-            selector: Selector::new(policy),
-        }
+    pub fn new(servers: Vec<Server>, policy: LoadBalancingPolicy) -> Self {
+        let selector = Selector::new(policy, &servers);
+
+        Self { servers, selector }
     }
 
     pub fn select(&self) -> Result<SocketAddr, PoolError> {
-        let Some(server_count) = NonZeroUsize::new(self.servers.len()) else {
-            return Err(PoolError::EmptyPool);
-        };
-
-        let index = self.selector.select(server_count)?;
+        let index = self.selector.select(&self.servers)?;
         Ok(self.servers[index].addr)
     }
 }
@@ -80,24 +82,24 @@ impl ServerPool {
 mod tests {
     use std::{net::SocketAddr, num::NonZeroU32};
 
-    use super::{Backend, LoadBalancingPolicy, PoolError, ServerPool};
+    use super::{LoadBalancingPolicy, PoolError, Server, ServerPool};
 
-    fn server(port: u16) -> SocketAddr {
+    fn server_address(port: u16) -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], port))
     }
 
-    fn backend(addr: SocketAddr) -> Backend {
-        Backend::new(addr, NonZeroU32::MIN)
+    fn server(addr: SocketAddr) -> Server {
+        Server::new(addr, NonZeroU32::MIN)
     }
 
     #[test]
     fn 서버를_입력_순서대로_선택한다() {
         // Given
-        let first = server(9000);
-        let second = server(9001);
-        let third = server(9002);
+        let first = server_address(9000);
+        let second = server_address(9001);
+        let third = server_address(9002);
         let pool = ServerPool::new(
-            vec![backend(first), backend(second), backend(third)],
+            vec![server(first), server(second), server(third)],
             LoadBalancingPolicy::RR,
         );
 
@@ -115,12 +117,9 @@ mod tests {
     #[test]
     fn 마지막_서버_다음에는_첫_서버를_선택한다() {
         // Given
-        let first = server(9000);
-        let second = server(9001);
-        let pool = ServerPool::new(
-            vec![backend(first), backend(second)],
-            LoadBalancingPolicy::RR,
-        );
+        let first = server_address(9000);
+        let second = server_address(9001);
+        let pool = ServerPool::new(vec![server(first), server(second)], LoadBalancingPolicy::RR);
 
         // When
         let selected = [

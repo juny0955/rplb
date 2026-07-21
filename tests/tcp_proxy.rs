@@ -1,7 +1,7 @@
 use std::{io, net::SocketAddr, num::NonZeroU32};
 
 use rplb::{
-    pool::{Backend, LoadBalancingPolicy, ServerPool},
+    pool::{LoadBalancingPolicy, Server, ServerPool},
     tcp::serve,
 };
 use tokio::{
@@ -10,8 +10,8 @@ use tokio::{
     task::JoinHandle,
 };
 
-fn weighted_backend(addr: SocketAddr) -> Backend {
-    Backend::new(addr, NonZeroU32::MIN)
+fn weighted_server(addr: SocketAddr) -> Server {
+    Server::new(addr, NonZeroU32::MIN)
 }
 
 struct Proxy {
@@ -25,7 +25,7 @@ impl Drop for Proxy {
     }
 }
 
-async fn start_proxy(servers: Vec<Backend>) -> io::Result<Proxy> {
+async fn start_proxy(servers: Vec<Server>) -> io::Result<Proxy> {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
     let address = listener.local_addr()?;
     let task = tokio::spawn(serve(
@@ -36,7 +36,7 @@ async fn start_proxy(servers: Vec<Backend>) -> io::Result<Proxy> {
     Ok(Proxy { address, task })
 }
 
-async fn start_reply_backend(
+async fn start_reply_server(
     reply: &'static [u8],
     connection_count: usize,
 ) -> io::Result<(SocketAddr, JoinHandle<io::Result<()>>)> {
@@ -70,11 +70,11 @@ async fn join(task: JoinHandle<io::Result<()>>) -> io::Result<()> {
 #[tokio::test]
 async fn 연속_연결을_서버에_라운드로빈_순서로_전달한다() -> io::Result<()> {
     // Given
-    let (first_addr, first_backend) = start_reply_backend(b"A", 2).await?;
-    let (second_addr, second_backend) = start_reply_backend(b"B", 1).await?;
+    let (first_addr, first_server) = start_reply_server(b"A", 2).await?;
+    let (second_addr, second_server) = start_reply_server(b"B", 1).await?;
     let proxy = start_proxy(vec![
-        weighted_backend(first_addr),
-        weighted_backend(second_addr),
+        weighted_server(first_addr),
+        weighted_server(second_addr),
     ])
     .await?;
 
@@ -87,8 +87,8 @@ async fn 연속_연결을_서버에_라운드로빈_순서로_전달한다() -> 
 
     // Then
     assert_eq!(replies, [b"A".to_vec(), b"B".to_vec(), b"A".to_vec()]);
-    join(first_backend).await?;
-    join(second_backend).await?;
+    join(first_server).await?;
+    join(second_server).await?;
 
     Ok(())
 }
@@ -97,8 +97,8 @@ async fn 연속_연결을_서버에_라운드로빈_순서로_전달한다() -> 
 async fn 클라이언트_쓰기_종료_후에도_서버_응답을_전달한다() -> io::Result<()> {
     // Given
     let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
-    let backend_addr = listener.local_addr()?;
-    let backend = tokio::spawn(async move {
+    let server_addr = listener.local_addr()?;
+    let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await?;
         let mut request = Vec::new();
         stream.read_to_end(&mut request).await?;
@@ -114,7 +114,7 @@ async fn 클라이언트_쓰기_종료_후에도_서버_응답을_전달한다()
         stream.shutdown().await?;
         Ok(())
     });
-    let proxy = start_proxy(vec![weighted_backend(backend_addr)]).await?;
+    let proxy = start_proxy(vec![weighted_server(server_addr)]).await?;
 
     // When
     let mut client = TcpStream::connect(proxy.address).await?;
@@ -126,7 +126,7 @@ async fn 클라이언트_쓰기_종료_후에도_서버_응답을_전달한다()
 
     // Then
     assert_eq!(reply, b"response");
-    join(backend).await?;
+    join(server).await?;
 
     Ok(())
 }
@@ -134,11 +134,11 @@ async fn 클라이언트_쓰기_종료_후에도_서버_응답을_전달한다()
 #[tokio::test]
 async fn 실패한_서버_연결_후에도_다음_연결을_처리한다() -> io::Result<()> {
     // Given
-    let (healthy_addr, healthy_backend) = start_reply_backend(b"healthy", 1).await?;
+    let (healthy_addr, healthy_server) = start_reply_server(b"healthy", 1).await?;
     let unavailable_addr = SocketAddr::from(([127, 0, 0, 1], 0));
     let proxy = start_proxy(vec![
-        weighted_backend(unavailable_addr),
-        weighted_backend(healthy_addr),
+        weighted_server(unavailable_addr),
+        weighted_server(healthy_addr),
     ])
     .await?;
 
@@ -152,7 +152,7 @@ async fn 실패한_서버_연결_후에도_다음_연결을_처리한다() -> io
     // Then
     assert_eq!(first_read_size, 0);
     assert_eq!(next_reply, b"healthy");
-    join(healthy_backend).await?;
+    join(healthy_server).await?;
 
     Ok(())
 }
