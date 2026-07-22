@@ -3,12 +3,13 @@ use std::{
     num::{NonZeroU32, NonZeroUsize},
 };
 
+mod least_connection;
 mod round_robin;
 mod sw_round_robin;
 
 use round_robin::RoundRobin;
 
-use crate::pool::sw_round_robin::SmoothWeightedRoundRobin;
+use crate::pool::{least_connection::LeastConnection, sw_round_robin::SmoothWeightedRoundRobin};
 
 #[derive(Debug)]
 pub enum PoolError {
@@ -16,13 +17,18 @@ pub enum PoolError {
 }
 
 pub enum LoadBalancingPolicy {
-    RR,   // RoundRobin
-    SWRR, // SmoothWeightedRoundRobin
+    /// RoundRobin
+    RR,
+    /// Smooth Weighted RoundRobin
+    SWRR,
+    /// Lease Connection
+    LC,
 }
 
 enum Selector {
     RR(RoundRobin),
     Swrr(SmoothWeightedRoundRobin),
+    Lc(LeastConnection),
 }
 
 impl Selector {
@@ -30,6 +36,7 @@ impl Selector {
         match policy {
             LoadBalancingPolicy::RR => Self::RR(RoundRobin::new()),
             LoadBalancingPolicy::SWRR => Self::Swrr(SmoothWeightedRoundRobin::new(servers)),
+            LoadBalancingPolicy::LC => todo!(),
         }
     }
 
@@ -41,6 +48,7 @@ impl Selector {
         match self {
             Self::RR(rr) => Ok(rr.select(server_count)),
             Self::Swrr(swrr) => swrr.select(servers).ok_or(PoolError::EmptyPool),
+            Self::Lc(_) => todo!(),
         }
     }
 }
