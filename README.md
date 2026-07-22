@@ -77,6 +77,36 @@ printf 'third\n' | nc -N 127.0.0.1 8080
 현재 가중치/전체 가중치 기반 smooth 선택으로 양의 정수 weight 비율에
 수렴시키고, 연속 선택이 한 backend로 쏠리지 않게 합니다.
 
+#### 수동 스모크 테스트
+
+M3 실행 구성은 `127.0.0.1:9000`의 weight를 `3`,
+`127.0.0.1:9001`의 weight를 `1`로 설정합니다. 세 터미널에서 echo
+backend 두 개와 프록시를 각각 실행합니다.
+
+```sh
+# 터미널 1
+cargo run --bin echo-backend -- 9000
+
+# 터미널 2
+cargo run --bin echo-backend -- 9001
+
+# 터미널 3
+cargo run --bin rplb
+```
+
+네 번째 터미널에서 매번 새 TCP 연결을 만들어 네 번 요청합니다.
+
+```sh
+for message in first second third fourth; do
+  printf '%s\n' "$message" | nc -w 1 127.0.0.1 8080
+done
+```
+
+각 명령은 보낸 문자열을 echo로 반환합니다. backend 로그에서 `9000`이
+`first`, `second`, `fourth`를 받고 `9001`이 `third`를 받으면 SWRR 순서
+`9000 → 9000 → 9001 → 9000`가 검증됩니다. 테스트가 끝나면 각
+프로세스에서 `Ctrl-C`로 종료합니다.
+
 ### M4. Least Connections
 
 활성 연결이 가장 적은 healthy backend를 선택하고, RAII guard로 정상
